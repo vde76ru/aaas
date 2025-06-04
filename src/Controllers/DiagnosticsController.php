@@ -5,13 +5,27 @@ use App\Core\Database;
 use App\Core\Logger;
 use App\Core\Cache;
 use App\Core\Config;
+use App\Core\Paths;
+use App\Core\Env;
 use App\Services\AuthService;
+use App\Services\MetricsService;
+use App\Services\QueueService;
+use App\Services\EmailService;
 use OpenSearch\ClientBuilder;
 
+/**
+ * Полная диагностика системы VDestor B2B
+ * Проверяет абсолютно все компоненты и настройки
+ */
 class DiagnosticsController extends BaseController
 {
     private array $diagnostics = [];
     private float $startTime;
+    private int $totalChecks = 0;
+    private int $passedChecks = 0;
+    private int $warningChecks = 0;
+    private int $failedChecks = 0;
+    private array $criticalErrors = [];
 
     public function __construct()
     {
@@ -19,771 +33,506 @@ class DiagnosticsController extends BaseController
     }
 
     /**
-     * GET /admin/diagnostics/run - Запустить диагностику
+     * GET /api/admin/diagnostics/run - Запустить полную диагностику
      */
     public function runAction(): void
     {
-        // Проверка прав доступа
-        if (!AuthService::checkRole('admin')) {
-            $this->error('Access denied', 403);
-            return;
-        }
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        
+        // Увеличиваем лимиты для диагностики
+        set_time_limit(300);
+        ini_set('memory_limit', '512M');
 
         try {
-            // Запускаем все проверки
-            $this->checkSystem();
-            $this->checkPHP();
-            $this->checkMemory();
-            $this->checkFilesystem();
+            // === 1. СИСТЕМНЫЕ ПРОВЕРКИ ===
+            $this->checkSystemInfo();
+            $this->checkPHPConfiguration();
+            $this->checkPHPExtensions();
+            $this->checkFileSystem();
+            $this->checkPermissions();
+            $this->checkDiskSpace();
+            $this->checkSystemLoad();
+            
+            // === 2. СЕТЕВЫЕ ПРОВЕРКИ ===
+            $this->checkNetworkConnectivity();
+            $this->checkDNS();
+            $this->checkHTTPS();
+            
+            // === 3. БАЗА ДАННЫХ ===
             $this->checkDatabase();
+            $this->checkDatabaseTables();
+            $this->checkDatabaseIndexes();
+            $this->checkDatabasePerformance();
+            $this->checkDatabaseIntegrity();
+            $this->checkDatabaseSize();
+            
+            // === 4. OPENSEARCH ===
             $this->checkOpenSearch();
+            $this->checkOpenSearchIndexes();
+            $this->checkOpenSearchPerformance();
+            
+            // === 5. КЕШ ===
             $this->checkCache();
+            $this->checkCachePerformance();
+            $this->checkCacheSize();
+            
+            // === 6. СЕССИИ ===
             $this->checkSessions();
+            $this->checkSessionSecurity();
+            $this->checkActiveSessions();
+            
+            // === 7. ОЧЕРЕДИ ===
             $this->checkQueues();
+            $this->checkQueueWorkers();
+            $this->checkFailedJobs();
+            
+            // === 8. EMAIL ===
+            $this->checkEmailConfiguration();
+            $this->checkEmailDelivery();
+            
+            // === 9. БЕЗОПАСНОСТЬ ===
+            $this->checkSecurityHeaders();
+            $this->checkFileSecurityPermissions();
+            $this->checkConfigurationSecurity();
+            $this->checkLoginAttempts();
+            $this->checkSuspiciousActivity();
+            
+            // === 10. ПРОИЗВОДИТЕЛЬНОСТЬ ===
+            $this->checkAPIPerformance();
+            $this->checkPageLoadTime();
+            $this->checkSlowQueries();
+            $this->checkMemoryUsage();
+            
+            // === 11. ЛОГИ И ОШИБКИ ===
+            $this->checkErrorLogs();
+            $this->checkApplicationLogs();
+            $this->checkAccessLogs();
+            $this->checkSecurityLogs();
+            
+            // === 12. ДАННЫЕ И КОНТЕНТ ===
+            $this->checkDataIntegrity();
+            $this->checkOrphanedRecords();
+            $this->checkDuplicateData();
+            $this->checkMissingRelations();
+            
+            // === 13. МЕТРИКИ И СТАТИСТИКА ===
             $this->checkMetrics();
-            $this->checkAPI();
-            $this->checkSecurity();
-            $this->checkLogs();
-            $this->checkProcesses();
-            $this->checkCron();
-            $this->checkEmail();
-            $this->checkIntegrations();
-
-            // Подсчитываем health score
-            $healthScore = $this->calculateHealthScore();
-
-            // Формируем итоговый отчет
-            $report = [
-                'timestamp' => date('c'),
-                'health_score' => $healthScore,
-                'execution_time' => microtime(true) - $this->startTime,
-                'diagnostics' => $this->diagnostics
-            ];
-
+            $this->checkBusinessMetrics();
+            $this->checkSystemMetrics();
+            
+            // === 14. ВНЕШНИЕ СЕРВИСЫ ===
+            $this->checkExternalAPIs();
+            $this->checkCDNServices();
+            
+            // === 15. КОНФИГУРАЦИЯ ===
+            $this->checkConfiguration();
+            $this->checkEnvironmentVariables();
+            $this->checkCronJobs();
+            
+            // === 16. ФРОНТЕНД ===
+            $this->checkAssets();
+            $this->checkJavaScript();
+            $this->checkCSS();
+            
+            // === ИТОГОВЫЙ ОТЧЕТ ===
+            $report = $this->generateReport();
             $this->success($report);
 
         } catch (\Exception $e) {
-            Logger::error('Diagnostics failed', ['error' => $e->getMessage()]);
+            Logger::error('Diagnostics failed', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
             $this->error('Diagnostics failed: ' . $e->getMessage(), 500);
         }
     }
 
-    /**
-     * Проверка базы данных (ИСПРАВЛЕНО)
-     */
-    private function checkDatabase(): void
+    // === 1. СИСТЕМНЫЕ ПРОВЕРКИ ===
+
+    private function checkSystemInfo(): void
     {
-        $data = [
-            'title' => '🗄️ База данных',
-            'status' => '❌ Error',
-            'info' => []
-        ];
-
-        try {
-            $pdo = Database::getConnection();
-            
-            // Основная информация
-            $version = $pdo->query("SELECT VERSION()")->fetchColumn();
-            $data['info']['Version'] = $version;
-            
-            // Проверяем подключение и получаем имя БД
-            $dbName = $pdo->query("SELECT DATABASE()")->fetchColumn();
-            
-            // Статус сервера
-            $uptime = $pdo->query("SHOW STATUS LIKE 'Uptime'")->fetch();
-            $data['info']['Uptime'] = $this->formatUptime($uptime['Value'] ?? 0);
-            
-            // Активные соединения
-            $threads = $pdo->query("SHOW STATUS LIKE 'Threads_connected'")->fetch();
-            $maxConn = $pdo->query("SHOW VARIABLES LIKE 'max_connections'")->fetch();
-            $data['info']['Active Connections'] = ($threads['Value'] ?? 0) . ' / ' . ($maxConn['Value'] ?? 100);
-            
-            // Размер БД - используем правильное имя БД
-            $stmt = $pdo->prepare("
-                SELECT 
-                    SUM(data_length + index_length) as size,
-                    COUNT(*) as tables_count
-                FROM information_schema.tables 
-                WHERE table_schema = ?
-            ");
-            $stmt->execute([$dbName]);
-            $dbInfo = $stmt->fetch();
-            
-            $data['info']['Database Size'] = $this->formatBytes($dbInfo['size'] ?? 0);
-            $data['info']['Tables Count'] = $dbInfo['tables_count'] ?? 0;
-            
-            // Проверяем наличие важных таблиц
-            $requiredTables = [
-                'products', 'users', 'carts', 'prices', 'stock_balances',
-                'categories', 'brands', 'series', 'cities', 'warehouses',
-                'sessions', 'audit_logs', 'application_logs', 'metrics', 
-                'job_queue', 'specifications'
-            ];
-            
-            $stmt = $pdo->prepare("
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = ? 
-                AND table_name IN (" . implode(',', array_fill(0, count($requiredTables), '?')) . ")
-            ");
-            
-            $params = array_merge([$dbName], $requiredTables);
-            $stmt->execute($params);
-            
-            $existingTables = $stmt->fetchAll(\PDO::FETCH_COLUMN);
-            $missingTables = array_diff($requiredTables, $existingTables);
-            
-            $data['info']['Missing Tables'] = count($missingTables) > 0 
-                ? implode(', ', $missingTables) 
-                : 'None';
-            
-            // Медленные запросы
-            $slowQueries = $pdo->query("SHOW STATUS LIKE 'Slow_queries'")->fetch();
-            $data['info']['Slow Queries'] = $slowQueries['Value'] ?? 0;
-            
-            // Статус - все ОК если нет пропущенных таблиц
-            $data['status'] = count($missingTables) === 0 ? '✅ Connected' : '⚠️ Warning';
-            
-            // Информация о таблицах
-            $stmt = $pdo->prepare("
-                SELECT 
-                    TABLE_NAME,
-                    TABLE_ROWS,
-                    ROUND((DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2) as size_mb,
-                    ENGINE,
-                    TABLE_COLLATION
-                FROM information_schema.TABLES
-                WHERE TABLE_SCHEMA = ?
-                ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC
-            ");
-            $stmt->execute([$dbName]);
-            
-            $data['tables'] = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-            
-        } catch (\Exception $e) {
-            $data['status'] = '❌ Error';
-            $data['error'] = $e->getMessage();
-        }
-
-        $this->diagnostics['database'] = $data;
-    }
-
-    /**
-     * Проверка API endpoints (ИСПРАВЛЕНО)
-     */
-    private function checkAPI(): void
-    {
-        $data = [
-            'title' => '🌐 API Endpoints',
-            'checks' => []
-        ];
-
-        $endpoints = [
-            'Test API' => '/api/test',
-            'Search API' => '/api/search?q=test&limit=1',
-            'Availability API' => '/api/availability?product_ids=1&city_id=1',
-            'Autocomplete API' => '/api/autocomplete?q=авт&limit=5'
-        ];
-
-        foreach ($endpoints as $name => $endpoint) {
-            $startTime = microtime(true);
-            
-            try {
-                // Используем полный URL для избежания редиректов
-                $url = 'https://vdestor.ru' . $endpoint;
-                
-                $ch = curl_init();
-                curl_setopt_array($ch, [
-                    CURLOPT_URL => $url,
-                    CURLOPT_RETURNTRANSFER => true,
-                    CURLOPT_TIMEOUT => 10,
-                    CURLOPT_FOLLOWLOCATION => false, // Не следовать редиректам
-                    CURLOPT_SSL_VERIFYPEER => true,
-                    CURLOPT_HTTPHEADER => [
-                        'Accept: application/json',
-                        'X-Requested-With: XMLHttpRequest'
-                    ]
-                ]);
-                
-                $response = curl_exec($ch);
-                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                $error = curl_error($ch);
-                curl_close($ch);
-                
-                $responseTime = round((microtime(true) - $startTime) * 1000, 2);
-                
-                $check = [
-                    'endpoint' => $endpoint,
-                    'status' => '❌',
-                    'http_code' => $httpCode,
-                    'response_time' => $responseTime . 'ms'
-                ];
-                
-                if ($error) {
-                    $check['error'] = $error;
-                } else {
-                    // Проверяем, что это JSON
-                    $json = json_decode($response, true);
-                    if ($httpCode === 200 && $json !== null) {
-                        $check['status'] = '✅';
-                        $check['response_preview'] = substr($response, 0, 100) . '...';
-                    } else {
-                        $check['response_preview'] = substr($response, 0, 200) . '...';
-                    }
-                }
-                
-                $data['checks'][$name] = $check;
-                
-            } catch (\Exception $e) {
-                $data['checks'][$name] = [
-                    'endpoint' => $endpoint,
-                    'status' => '❌',
-                    'error' => $e->getMessage()
-                ];
-            }
-        }
-
-        $this->diagnostics['api'] = $data;
-    }
-
-    /**
-     * Проверка OpenSearch (ИСПРАВЛЕНО)
-     */
-    private function checkOpenSearch(): void
-    {
-        $data = [
-            'title' => '🔍 OpenSearch/Elasticsearch',
-            'status' => '❌ Error',
-            'info' => []
-        ];
-
-        try {
-            $client = ClientBuilder::create()
-                ->setHosts(['localhost:9200'])
-                ->setConnectionParams([
-                    'timeout' => 5,
-                    'connect_timeout' => 3
-                ])
-                ->build();
-
-            // Информация о кластере
-            $info = $client->info();
-            $data['info']['Version'] = $info['version']['number'] ?? 'Unknown';
-
-            // Здоровье кластера
-            $health = $client->cluster()->health();
-            $data['info']['Cluster Name'] = $health['cluster_name'] ?? 'Unknown';
-            $data['info']['Status'] = $health['status'] ?? 'unknown';
-            $data['info']['Nodes'] = $health['number_of_nodes'] ?? 0;
-            $data['info']['Active Shards'] = $health['active_shards'] ?? 0;
-
-            // Статус
-            if ($health['status'] === 'green') {
-                $data['status'] = '✅ Healthy';
-            } elseif ($health['status'] === 'yellow') {
-                $data['status'] = '⚠️ Warning';
-            } else {
-                $data['status'] = '❌ Critical';
-            }
-
-            // Индексы
-            try {
-                $indices = $client->cat()->indices(['format' => 'json']);
-                $data['info']['Indices Count'] = count($indices);
-                
-                // Проверяем алиас products_current
-                try {
-                    $aliases = $client->indices()->getAlias(['name' => 'products_current']);
-                    $data['info']['Current Alias'] = implode(', ', array_keys($aliases));
-                } catch (\Exception $e) {
-                    $data['info']['Current Alias'] = 'Not configured';
-                }
-                
-                // Количество документов в основном индексе
-                $totalDocs = 0;
-                foreach ($indices as $index) {
-                    if (strpos($index['index'], 'products') !== false) {
-                        $totalDocs += (int)($index['docs.count'] ?? 0);
-                    }
-                }
-                $data['info']['Total Documents'] = $totalDocs;
-                
-            } catch (\Exception $e) {
-                $data['info']['Indices'] = 'Error: ' . $e->getMessage();
-            }
-
-        } catch (\Exception $e) {
-            $data['error'] = $e->getMessage();
-        }
-
-        $this->diagnostics['opensearch'] = $data;
-    }
-
-    /**
-     * Проверка безопасности (ИСПРАВЛЕНО)
-     */
-    private function checkSecurity(): void
-    {
-        $data = [
-            'title' => '🔒 Безопасность',
-            'checks' => []
-        ];
-
-        // Проверка HTTPS
-        $data['checks']['HTTPS'] = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? '✅' : '❌';
-
-        // Проверка заголовков безопасности
-        $headers = array_change_key_case(getallheaders(), CASE_LOWER);
+        $this->totalChecks++;
         
-        $securityHeaders = [
-            'X-Content-Type-Options' => 'x-content-type-options',
-            'X-Frame-Options' => 'x-frame-options', 
-            'X-XSS-Protection' => 'x-xss-protection',
-            'Strict-Transport-Security' => 'strict-transport-security'
-        ];
-
-        foreach ($securityHeaders as $name => $header) {
-            $data['checks'][$name] = isset($headers[$header]) ? '✅' : '❌';
-        }
-
-        // Проверка конфигурации
-        $configPath = Config::getConfigPath();
-        if ($configPath && is_dir($configPath)) {
-            $perms = fileperms($configPath) & 0777;
-            // 750 или меньше - это нормально для конфига
-            $data['checks']['Config Directory Protected'] = ($perms <= 0750) ? '✅' : '❌';
-        }
-
-        // Проверка проблем конфигурации
-        $data['config_issues'] = Config::validateSecurity();
-
-        $this->diagnostics['security'] = $data;
-    }
-
-    /**
-     * Вспомогательные методы
-     */
-    private function formatBytes(int $bytes): string
-    {
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $bytes = max($bytes, 0);
-        $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
-        $pow = min($pow, count($units) - 1);
-        $bytes /= pow(1024, $pow);
-        return round($bytes, 2) . ' ' . $units[$pow];
-    }
-
-    private function formatUptime(int $seconds): string
-    {
-        $days = floor($seconds / 86400);
-        $hours = floor(($seconds % 86400) / 3600);
-        $minutes = floor(($seconds % 3600) / 60);
-        return "{$days}d {$hours}h {$minutes}m";
-    }
-
-    private function calculateHealthScore(): float
-    {
-        $totalChecks = 0;
-        $passedChecks = 0;
-
-        // Проверяем все диагностики
-        foreach ($this->diagnostics as $section => $data) {
-            if (isset($data['status'])) {
-                $totalChecks++;
-                if (strpos($data['status'], '✅') !== false) {
-                    $passedChecks++;
-                } elseif (strpos($data['status'], '⚠️') !== false) {
-                    $passedChecks += 0.5;
-                }
-            }
-            
-            if (isset($data['checks'])) {
-                foreach ($data['checks'] as $check) {
-                    $totalChecks++;
-                    if ((is_array($check) && isset($check['status']) && strpos($check['status'], '✅') !== false) ||
-                        (is_string($check) && $check === '✅')) {
-                        $passedChecks++;
-                    }
-                }
-            }
-        }
-
-        return $totalChecks > 0 ? round(($passedChecks / $totalChecks) * 100, 2) : 0;
-    }
-
-    // Остальные методы проверки...
-    private function checkSystem(): void
-    {
         $data = [
             'title' => '🖥️ Информация о системе',
+            'status' => '✅ OK',
             'data' => [
                 'Hostname' => gethostname(),
-                'Server IP' => $_SERVER['SERVER_ADDR'] ?? 'Unknown',
+                'OS' => php_uname('s') . ' ' . php_uname('r'),
+                'Architecture' => php_uname('m'),
+                'PHP Version' => PHP_VERSION,
+                'PHP SAPI' => PHP_SAPI,
                 'Server Software' => $_SERVER['SERVER_SOFTWARE'] ?? 'Unknown',
                 'Server Time' => date('Y-m-d H:i:s'),
                 'Timezone' => date_default_timezone_get(),
-                'OS' => php_uname('s') . ' ' . php_uname('r'),
-                'Server Load' => implode(', ', sys_getloadavg()),
-                'Uptime' => shell_exec('uptime') ?? 'Unknown'
+                'Uptime' => $this->getSystemUptime()
             ]
         ];
+        
+        // Проверка версии PHP
+        if (version_compare(PHP_VERSION, '7.4.0', '<')) {
+            $data['status'] = '❌ Error';
+            $data['error'] = 'PHP версия ниже 7.4.0';
+            $this->failedChecks++;
+            $this->criticalErrors[] = 'Устаревшая версия PHP';
+        } else {
+            $this->passedChecks++;
+        }
+        
         $this->diagnostics['system'] = $data;
     }
 
-    private function checkPHP(): void
+    private function checkPHPConfiguration(): void
     {
-        $data = [
-            'title' => '🐘 PHP Конфигурация',
-            'checks' => [],
-            'extensions' => []
+        $this->totalChecks++;
+        
+        $requiredSettings = [
+            'memory_limit' => ['required' => '256M', 'compare' => '>='],
+            'max_execution_time' => ['required' => 300, 'compare' => '>='],
+            'post_max_size' => ['required' => '32M', 'compare' => '>='],
+            'upload_max_filesize' => ['required' => '32M', 'compare' => '>='],
+            'max_input_vars' => ['required' => 1000, 'compare' => '>='],
+            'max_file_uploads' => ['required' => 20, 'compare' => '>=']
         ];
-
-        // Проверка версий и лимитов
-        $checks = [
-            'version' => ['current' => PHP_VERSION, 'required' => '7.4.0', 'check' => version_compare(PHP_VERSION, '7.4.0', '>=')],
-            'memory_limit' => ['current' => ini_get('memory_limit'), 'required' => '256M', 'check' => true],
-            'max_execution_time' => ['current' => ini_get('max_execution_time'), 'required' => '300', 'check' => true],
-            'post_max_size' => ['current' => ini_get('post_max_size'), 'required' => '32M', 'check' => true],
-            'upload_max_filesize' => ['current' => ini_get('upload_max_filesize'), 'required' => '32M', 'check' => true],
-            'session.gc_maxlifetime' => ['current' => ini_get('session.gc_maxlifetime'), 'required' => '1440', 'check' => true],
-            'error_reporting' => ['current' => error_reporting(), 'required' => 'E_ALL', 'check' => true],
-            'display_errors' => ['current' => ini_get('display_errors'), 'required' => '0 (production)', 'check' => true]
-        ];
-        $data['checks'] = $checks;
-
-        // Проверка расширений
-        $requiredExtensions = ['PDO', 'PDO MySQL', 'JSON', 'cURL', 'Mbstring', 'OpenSSL', 'GD', 'Zip', 'Session', 'Redis', 'APCu'];
-        foreach ($requiredExtensions as $ext) {
-            $extName = str_replace(' ', '_', strtolower($ext));
-            $data['extensions'][$ext] = extension_loaded($extName);
+        
+        $checks = [];
+        $hasErrors = false;
+        
+        foreach ($requiredSettings as $setting => $requirement) {
+            $current = ini_get($setting);
+            
+            if ($setting === 'max_execution_time' && $current == 0) {
+                $checks[$setting] = [
+                    'current' => 'Unlimited',
+                    'required' => $requirement['required'],
+                    'status' => '✅'
+                ];
+                continue;
+            }
+            
+            $currentBytes = $this->parseSize($current);
+            $requiredBytes = $this->parseSize($requirement['required']);
+            
+            $passed = false;
+            switch ($requirement['compare']) {
+                case '>=':
+                    $passed = $currentBytes >= $requiredBytes;
+                    break;
+                case '<=':
+                    $passed = $currentBytes <= $requiredBytes;
+                    break;
+            }
+            
+            $checks[$setting] = [
+                'current' => $current,
+                'required' => $requirement['required'],
+                'status' => $passed ? '✅' : '❌'
+            ];
+            
+            if (!$passed) {
+                $hasErrors = true;
+            }
         }
-
-        $this->diagnostics['php'] = $data;
-    }
-
-    private function checkMemory(): void
-    {
-        $data = [
-            'title' => '💾 Память и ресурсы',
-            'data' => [
-                'Current Memory Usage' => $this->formatBytes(memory_get_usage(true)),
-                'Peak Memory Usage' => $this->formatBytes(memory_get_peak_usage(true)),
-                'Memory Limit' => ini_get('memory_limit'),
-                'Memory Usage %' => round((memory_get_usage(true) / $this->parseMemoryLimit(ini_get('memory_limit'))) * 100, 2) . '%',
-                'Free System Memory' => $this->formatBytes($this->getFreeMemory()),
-                'Total System Memory' => $this->formatBytes($this->getTotalMemory()),
-                'CPU Cores' => shell_exec('nproc') ?? 'Unknown'
-            ]
+        
+        // Дополнительные настройки
+        $additionalSettings = [
+            'display_errors' => ini_get('display_errors'),
+            'error_reporting' => error_reporting(),
+            'log_errors' => ini_get('log_errors'),
+            'error_log' => ini_get('error_log'),
+            'date.timezone' => ini_get('date.timezone'),
+            'default_charset' => ini_get('default_charset'),
+            'opcache.enable' => ini_get('opcache.enable'),
+            'opcache.memory_consumption' => ini_get('opcache.memory_consumption'),
+            'session.gc_maxlifetime' => ini_get('session.gc_maxlifetime'),
+            'session.save_handler' => ini_get('session.save_handler')
         ];
-        $this->diagnostics['memory'] = $data;
+        
+        $data = [
+            'title' => '⚙️ PHP Конфигурация',
+            'status' => $hasErrors ? '❌ Error' : '✅ OK',
+            'checks' => $checks,
+            'additional' => $additionalSettings
+        ];
+        
+        if ($hasErrors) {
+            $data['error'] = 'Некоторые настройки PHP не соответствуют требованиям';
+            $this->failedChecks++;
+        } else {
+            $this->passedChecks++;
+        }
+        
+        $this->diagnostics['php_config'] = $data;
     }
 
-    private function checkFilesystem(): void
+    private function checkPHPExtensions(): void
     {
+        $this->totalChecks++;
+        
+        $requiredExtensions = [
+            'pdo' => 'База данных',
+            'pdo_mysql' => 'MySQL драйвер',
+            'json' => 'JSON обработка',
+            'curl' => 'HTTP запросы',
+            'mbstring' => 'Мультибайтовые строки',
+            'openssl' => 'Шифрование',
+            'session' => 'Сессии',
+            'zip' => 'Архивы',
+            'gd' => 'Обработка изображений',
+            'fileinfo' => 'Определение типов файлов',
+            'bcmath' => 'Точные вычисления',
+            'intl' => 'Интернационализация'
+        ];
+        
+        $optionalExtensions = [
+            'opcache' => 'Кеширование кода',
+            'redis' => 'Redis поддержка',
+            'imagick' => 'Расширенная обработка изображений',
+            'apcu' => 'Пользовательский кеш',
+            'xdebug' => 'Отладка',
+            'igbinary' => 'Бинарная сериализация'
+        ];
+        
+        $installedRequired = [];
+        $missingRequired = [];
+        $installedOptional = [];
+        
+        foreach ($requiredExtensions as $ext => $desc) {
+            if (extension_loaded($ext)) {
+                $installedRequired[$ext] = $desc;
+            } else {
+                $missingRequired[$ext] = $desc;
+            }
+        }
+        
+        foreach ($optionalExtensions as $ext => $desc) {
+            if (extension_loaded($ext)) {
+                $installedOptional[$ext] = $desc;
+            }
+        }
+        
+        $data = [
+            'title' => '🧩 PHP Расширения',
+            'status' => empty($missingRequired) ? '✅ OK' : '❌ Error',
+            'required' => [
+                'installed' => $installedRequired,
+                'missing' => $missingRequired
+            ],
+            'optional' => $installedOptional,
+            'total_loaded' => count(get_loaded_extensions())
+        ];
+        
+        if (!empty($missingRequired)) {
+            $data['error'] = 'Отсутствуют обязательные расширения: ' . implode(', ', array_keys($missingRequired));
+            $this->failedChecks++;
+            $this->criticalErrors[] = 'Отсутствуют PHP расширения';
+        } else {
+            $this->passedChecks++;
+        }
+        
+        $this->diagnostics['php_extensions'] = $data;
+    }
+
+    private function checkFileSystem(): void
+    {
+        $this->totalChecks++;
+        
+        $paths = [
+            'root' => Paths::get('root'),
+            'public' => Paths::get('public'),
+            'config' => Paths::get('config'),
+            'logs' => Paths::get('logs'),
+            'cache' => Paths::get('cache'),
+            'sessions' => Paths::get('sessions'),
+            'uploads' => Paths::get('uploads'),
+            'assets' => Paths::get('assets')
+        ];
+        
+        $results = [];
+        $hasErrors = false;
+        
+        foreach ($paths as $name => $path) {
+            $exists = file_exists($path);
+            $readable = $exists && is_readable($path);
+            $writable = $exists && is_writable($path);
+            
+            $results[$name] = [
+                'path' => $path,
+                'exists' => $exists ? '✅' : '❌',
+                'readable' => $readable ? '✅' : '❌',
+                'writable' => $writable ? '✅' : '❌'
+            ];
+            
+            if (!$exists || !$readable) {
+                $hasErrors = true;
+            }
+            
+            // Некоторые директории должны быть записываемыми
+            if (in_array($name, ['logs', 'cache', 'sessions', 'uploads']) && !$writable) {
+                $hasErrors = true;
+            }
+        }
+        
         $data = [
             'title' => '📁 Файловая система',
-            'paths' => [],
-            'disk' => []
+            'status' => $hasErrors ? '❌ Error' : '✅ OK',
+            'paths' => $results
         ];
-
-        $paths = [
-            'Root' => $_SERVER['DOCUMENT_ROOT'],
-            'Logs' => '/var/log/vdestor',
-            'Cache' => '/tmp/vdestor_cache',
-            'Config' => Config::getConfigPath() ?? '/etc/vdestor/config',
-            'Uploads' => $_SERVER['DOCUMENT_ROOT'] . '/uploads',
-            'Assets' => $_SERVER['DOCUMENT_ROOT'] . '/assets/dist',
-            'Sessions' => ini_get('session.save_path')
-        ];
-
-        foreach ($paths as $name => $path) {
-            $info = [
-                'path' => $path,
-                'exists' => file_exists($path),
-                'readable' => is_readable($path),
-                'writable' => is_writable($path),
-                'permissions' => file_exists($path) ? substr(sprintf('%o', fileperms($path)), -4) : 'N/A',
-                'size' => file_exists($path) && is_dir($path) ? $this->getDirectorySize($path) : '0 B',
-                'status' => '❌'
-            ];
-
-            // Определяем статус
-            if ($info['exists'] && $info['readable']) {
-                if ($name === 'Config') {
-                    // Конфиг должен быть защищен от записи
-                    $info['status'] = !$info['writable'] ? '✅' : '❌';
-                } else {
-                    // Остальные папки должны быть доступны для записи
-                    $info['status'] = $info['writable'] ? '✅' : '❌';
-                }
-            }
-
-            $data['paths'][$name] = $info;
+        
+        if ($hasErrors) {
+            $data['error'] = 'Проблемы с правами доступа к директориям';
+            $this->failedChecks++;
+        } else {
+            $this->passedChecks++;
         }
-
-        // Информация о диске
-        $data['disk'] = [
-            'Total Space' => $this->formatBytes(disk_total_space('/')),
-            'Used Space' => $this->formatBytes(disk_total_space('/') - disk_free_space('/')),
-            'Free Space' => $this->formatBytes(disk_free_space('/')),
-            'Usage %' => round(((disk_total_space('/') - disk_free_space('/')) / disk_total_space('/')) * 100, 2) . '%'
-        ];
-
+        
         $this->diagnostics['filesystem'] = $data;
     }
 
-    private function checkCache(): void
+    private function checkPermissions(): void
     {
-        $data = [
-            'title' => '⚡ Кеш система',
-            'status' => '❌ Error'
+        $this->totalChecks++;
+        
+        $criticalFiles = [
+            '/etc/vdestor/config/.env' => '0600',
+            '/etc/vdestor/config/database.ini' => '0600',
+            '/etc/vdestor/config/app.ini' => '0600'
         ];
-
-        try {
-            $stats = Cache::getStats();
-            $data['stats'] = $stats;
-            $data['status'] = $stats['enabled'] ? '✅ Working' : '❌ Disabled';
-        } catch (\Exception $e) {
-            $data['error'] = $e->getMessage();
+        
+        $results = [];
+        $hasErrors = false;
+        
+        foreach ($criticalFiles as $file => $expectedPerms) {
+            if (file_exists($file)) {
+                $actualPerms = substr(sprintf('%o', fileperms($file)), -4);
+                $owner = posix_getpwuid(fileowner($file))['name'] ?? 'unknown';
+                $group = posix_getgrgid(filegroup($file))['name'] ?? 'unknown';
+                
+                $results[$file] = [
+                    'exists' => '✅',
+                    'perms' => $actualPerms,
+                    'expected' => $expectedPerms,
+                    'secure' => $actualPerms === $expectedPerms ? '✅' : '❌',
+                    'owner' => $owner,
+                    'group' => $group
+                ];
+                
+                if ($actualPerms !== $expectedPerms) {
+                    $hasErrors = true;
+                }
+            } else {
+                $results[$file] = [
+                    'exists' => '❌',
+                    'perms' => 'N/A',
+                    'expected' => $expectedPerms,
+                    'secure' => '❌'
+                ];
+                $hasErrors = true;
+            }
         }
-
-        $this->diagnostics['cache'] = $data;
+        
+        $data = [
+            'title' => '🔐 Права доступа',
+            'status' => $hasErrors ? '⚠️ Warning' : '✅ OK',
+            'files' => $results
+        ];
+        
+        if ($hasErrors) {
+            $data['warning'] = 'Неправильные права доступа к критическим файлам';
+            $this->warningChecks++;
+        } else {
+            $this->passedChecks++;
+        }
+        
+        $this->diagnostics['permissions'] = $data;
     }
 
-    private function checkSessions(): void
+    private function checkDiskSpace(): void
     {
-        $data = [
-            'title' => '🔐 Сессии',
-            'data' => [
-                'Handler' => ini_get('session.save_handler'),
-                'Save Path' => ini_get('session.save_path'),
-                'GC Lifetime' => ini_get('session.gc_maxlifetime') . ' seconds',
-                'Current Session ID' => session_id() ?: 'None',
-                'Session Status' => session_status() === PHP_SESSION_ACTIVE ? '✅ Active' : '❌ Inactive'
-            ]
+        $this->totalChecks++;
+        
+        $partitions = [];
+        
+        // Основные разделы
+        $paths = [
+            '/' => 'Корневой раздел',
+            Paths::get('root') => 'Директория приложения',
+            '/tmp' => 'Временные файлы',
+            Paths::get('logs') => 'Логи'
         ];
-
-        // Количество сессий в БД
-        try {
-            $count = Database::query("SELECT COUNT(*) FROM sessions")->fetchColumn();
-            $data['data']['Sessions in DB'] = $count;
-        } catch (\Exception $e) {
-            $data['data']['Sessions in DB'] = 'Error';
-        }
-
-        $this->diagnostics['sessions'] = $data;
-    }
-
-    private function checkQueues(): void
-    {
-        $data = [
-            'title' => '📋 Очереди задач'
-        ];
-
-        try {
-            $stats = \App\Services\QueueService::getStats();
-            $data['stats'] = $stats;
-        } catch (\Exception $e) {
-            $data['error'] = $e->getMessage();
-        }
-
-        $this->diagnostics['queues'] = $data;
-    }
-
-    private function checkMetrics(): void
-    {
-        $data = [
-            'title' => '📊 Метрики (последние 24 часа)'
-        ];
-
-        try {
-            $stats = \App\Services\MetricsService::getStats('day');
-            $data['summary'] = $stats['summary'] ?? [];
-            $data['performance'] = $stats['performance'] ?? [];
-            $data['errors'] = count($stats['errors'] ?? []);
-        } catch (\Exception $e) {
-            $data['error'] = $e->getMessage();
-        }
-
-        $this->diagnostics['metrics'] = $data;
-    }
-
-    private function checkLogs(): void
-    {
-        $data = [
-            'title' => '📜 Логи и ошибки',
-            'files' => []
-        ];
-
-        $logDir = '/var/log/vdestor';
-        if (is_dir($logDir)) {
-            $files = glob($logDir . '/*.log');
-            foreach ($files as $file) {
-                $data['files'][] = [
-                    'name' => basename($file),
-                    'size' => $this->formatBytes(filesize($file)),
-                    'modified' => date('Y-m-d H:i:s', filemtime($file))
+        
+        foreach ($paths as $path => $name) {
+            if (is_dir($path)) {
+                $free = disk_free_space($path);
+                $total = disk_total_space($path);
+                $used = $total - $free;
+                $percent = round(($used / $total) * 100, 2);
+                
+                $partitions[$name] = [
+                    'path' => $path,
+                    'total' => $this->formatBytes($total),
+                    'used' => $this->formatBytes($used),
+                    'free' => $this->formatBytes($free),
+                    'percent_used' => $percent,
+                    'status' => $percent > 90 ? '❌' : ($percent > 80 ? '⚠️' : '✅')
                 ];
             }
         }
-
-        // Последние ошибки из БД
-        try {
-            $stmt = Database::query("
-                SELECT level, message, created_at 
-                FROM application_logs 
-                WHERE level IN ('error', 'critical') 
-                ORDER BY created_at DESC 
-                LIMIT 10
-            ");
-            $data['last_errors'] = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-        } catch (\Exception $e) {
-            $data['last_errors'] = [];
+        
+        $criticalSpace = false;
+        $warningSpace = false;
+        
+        foreach ($partitions as $partition) {
+            if ($partition['percent_used'] > 90) {
+                $criticalSpace = true;
+            } elseif ($partition['percent_used'] > 80) {
+                $warningSpace = true;
+            }
         }
-
-        $this->diagnostics['logs'] = $data;
-    }
-
-    private function checkProcesses(): void
-    {
+        
         $data = [
-            'title' => '⚙️ Процессы и сервисы',
-            'running' => []
+            'title' => '💾 Дисковое пространство',
+            'status' => $criticalSpace ? '❌ Critical' : ($warningSpace ? '⚠️ Warning' : '✅ OK'),
+            'partitions' => $partitions
         ];
-
-        // Проверяем процессы
-        $processes = [
-            'PHP-FPM' => 'ps aux | grep php-fpm | grep -v grep | wc -l',
-            'MySQL' => 'ps aux | grep mysql | grep -v grep | wc -l',
-            'Nginx' => 'ps aux | grep nginx | grep -v grep | wc -l',
-            'Redis' => 'ps aux | grep redis | grep -v grep | wc -l',
-            'Queue Workers' => 'ps aux | grep queue:work | grep -v grep | wc -l'
-        ];
-
-        foreach ($processes as $name => $cmd) {
-            $count = trim(shell_exec($cmd) ?? '0');
-            $data['running'][$name] = $count;
-        }
-
-        // Детальная информация о PHP процессах
-        $data['php_processes'] = shell_exec('ps aux | grep php-fpm | grep -v grep') ?? '';
-
-        $this->diagnostics['processes'] = $data;
-    }
-
-    private function checkCron(): void
-    {
-        $data = [
-            'title' => '⏰ Cron задачи'
-        ];
-
-        $cronJobs = shell_exec('crontab -l 2>/dev/null | grep -v "^#"') ?? '';
-        $data['jobs'] = $cronJobs ?: 'No cron jobs or unable to read';
-
-        $this->diagnostics['cron'] = $data;
-    }
-
-    private function checkEmail(): void
-    {
-        $data = [
-            'title' => '📧 Email система',
-            'stats' => []
-        ];
-
-        try {
-            $stmt = Database::query("
-                SELECT 
-                    COUNT(*) as total,
-                    SUM(CASE WHEN opened_at IS NOT NULL THEN 1 ELSE 0 END) as opened,
-                    MAX(sent_at) as last_sent
-                FROM email_logs
-                WHERE sent_at > DATE_SUB(NOW(), INTERVAL 7 DAY)
-            ");
-            $emailStats = $stmt->fetch();
-            
-            $data['stats'] = [
-                'Emails sent (7 days)' => $emailStats['total'] ?? 0,
-                'Emails opened' => $emailStats['opened'] ?? 0,
-                'Last sent' => $emailStats['last_sent'] ?? 'Never',
-                'Mail function' => function_exists('mail') ? '✅ Available' : '❌ Not available'
-            ];
-        } catch (\Exception $e) {
-            $data['error'] = $e->getMessage();
-        }
-
-        $this->diagnostics['email'] = $data;
-    }
-
-    private function checkIntegrations(): void
-    {
-        $data = [
-            'title' => '🔗 Интеграции',
-            'services' => []
-        ];
-
-        // Проверяем настроенные интеграции
-        $integrations = Config::get('integrations', []);
-        if (empty($integrations)) {
-            $data['services'][] = 'None configured';
+        
+        if ($criticalSpace) {
+            $data['error'] = 'Критически мало свободного места на диске';
+            $this->failedChecks++;
+            $this->criticalErrors[] = 'Мало места на диске';
+        } elseif ($warningSpace) {
+            $data['warning'] = 'Заканчивается свободное место на диске';
+            $this->warningChecks++;
         } else {
-            foreach ($integrations as $name => $config) {
-                $data['services'][] = $name . ': ' . ($config['enabled'] ?? false ? '✅' : '❌');
-            }
+            $this->passedChecks++;
         }
-
-        $this->diagnostics['integrations'] = $data;
+        
+        $this->diagnostics['disk_space'] = $data;
     }
 
-    // Вспомогательные методы
-    private function parseMemoryLimit(string $limit): int
+    private function checkSystemLoad(): void
     {
-        $limit = trim($limit);
-        if ($limit === '-1') {
-            return PHP_INT_MAX;
-        }
+        $this->totalChecks++;
         
-        $last = strtolower($limit[strlen($limit) - 1]);
-        $value = (int)$limit;
+        $loadAvg = sys_getloadavg();
+        $cpuCount = $this->getCPUCount();
         
-        switch ($last) {
-            case 'g': $value *= 1024 * 1024 * 1024; break;
-            case 'm': $value *= 1024 * 1024; break;
-            case 'k': $value *= 1024; break;
-        }
+        $data = [
+            'title' => '📊 Нагрузка системы',
+            'load_average' => [
+                '1_min' => round($loadAvg[0], 2),
+                '5_min' => round($loadAvg[1], 2),
+                '15_min' => round($loadAvg[2], 2)
+            ],
+            'cpu_cores' => $cpuCount,
+            'normalized_load' => [
+                '1_min' => round($loadAvg[0] / $cpuCount, 2),
+                '5_min' => round($loadAvg[1] / $cpuCount, 2),
+                '15_min' => round($loadAvg[2] / $cpuCount, 2)
+            ]
+        ];
         
-        return $value;
-    }
-
-    private function getFreeMemory(): int
-    {
-        $free = shell_exec("free -b | grep Mem | awk '{print $4}'");
-        return (int)trim($free);
-    }
-
-    private function getTotalMemory(): int
-    {
-        $total = shell_exec("free -b | grep Mem | awk '{print $2}'");
-        return (int)trim($total);
-    }
-
-    private function getDirectorySize(string $path): string
-    {
-        if (!is_dir($path)) {
-            return '0 B';
-        }
-        
-        $size = 0;
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::LEAVES_ONLY
-        );
-        
-        foreach ($files as $file) {
-            if ($file->isFile()) {
-                $size += $file->getSize();
-            }
-        }
-        
-        return $this->formatBytes($size);
-    }
-}
+        // Проверка нагрузки
+        $normalizedLoad = $loadAvg[0
